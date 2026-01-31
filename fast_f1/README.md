@@ -59,6 +59,65 @@ python run_all.py --fetch
 python run_all.py --viz
 ```
 
+## Race Animation
+
+### `run_animation.py`
+Easy-to-use script to generate race animations with different options.
+
+```bash
+# Create HTML5 animation (no FFmpeg required)
+python run_animation.py --html
+
+# Quick test mode (fewer frames)
+python run_animation.py --html --quick
+
+# Create static snapshots only
+python run_animation.py --snapshot
+
+# Full MP4 animation (requires FFmpeg)
+python run_animation.py
+
+# Custom options
+python run_animation.py --html --speed 20 --duration 600
+```
+
+### Animation Scripts
+
+#### `race_animation_enhanced.py`
+Full-featured race animation with:
+- Cars moving around the track with team colors
+- Driver number labels
+- Real-time speed visualization
+- Leaderboard panel
+- Lap counter
+- MP4/GIF output (requires FFmpeg for MP4)
+
+```bash
+python race_animation_enhanced.py --speed 15 --fps 30
+python race_animation_enhanced.py --snapshot-only
+```
+
+#### `race_animation_html.py`
+HTML5 interactive animation that works in any web browser:
+- No FFmpeg required
+- Interactive playback controls
+- Team-colored cars with driver numbers
+
+```bash
+python race_animation_html.py
+```
+
+#### `race_animation.py`
+Basic animation script with simpler features.
+
+### Animation Output
+
+Animations are saved to the `animations/` folder:
+- `race_animation.mp4` - Video animation
+- `race_animation.html` - Interactive HTML5 animation
+- `race_animation.gif` - GIF animation (fallback)
+- `snapshot_*.png` - Static snapshots at different race points
+
 ## Directory Structure
 
 ```
@@ -68,16 +127,23 @@ fast_f1/
 ├── run_all.py
 ├── fetch_latest_race.py
 ├── visualize_race.py
-├── cache/              # FastF1 API cache (speeds up subsequent runs)
-├── data/               # Exported CSV files
+├── run_animation.py            # Easy animation runner
+├── race_animation.py           # Basic animation script
+├── race_animation_enhanced.py  # Full-featured animation
+├── race_animation_html.py      # HTML5 animation
+├── cache/                      # FastF1 API cache
+├── data/                       # Exported CSV files
 │   └── YYYY-MM-DD_RaceName/
 │       ├── session_results.csv
 │       ├── laps.csv
 │       └── ...
-└── plots/              # Generated visualizations
-    ├── 01_race_summary.png
-    ├── 02_final_positions.png
-    └── ...
+├── plots/                      # Static visualizations
+│   ├── 01_race_summary.png
+│   └── ...
+└── animations/                 # Animation outputs
+    ├── race_animation.mp4
+    ├── race_animation.html
+    └── snapshot_*.png
 ```
 
 ## FastF1 Features Used
@@ -92,6 +158,25 @@ fast_f1/
 - First run may take longer as FastF1 downloads and caches data
 - Telemetry data is sampled to reduce file sizes
 - The cache directory speeds up subsequent analyses
+
+### FFmpeg for Video Output
+
+For MP4 video animations, FFmpeg is required:
+
+**macOS:**
+```bash
+brew install ffmpeg
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install ffmpeg
+```
+
+**Windows:**
+Download from [ffmpeg.org](https://ffmpeg.org/download.html)
+
+If FFmpeg is not available, use the HTML5 animation output (`--html` flag) which works without it.
 
 ## Links
 

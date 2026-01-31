@@ -1405,6 +1405,7 @@ def plot_17_stint_degradation(data_dir, plots_dir):
     """Analyze tire degradation within stints."""
     laps_df = load_csv(data_dir, 'laps.csv')
     stints_df = load_csv(data_dir, 'stints.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
     
     if laps_df is None or laps_df.empty or stints_df is None:
         print("  ⚠️  No lap or stint data")
@@ -1413,6 +1414,12 @@ def plot_17_stint_degradation(data_dir, plots_dir):
     if 'LapTime_seconds' not in laps_df.columns:
         print("  ⚠️  No lap time data")
         return False
+    
+    # Create driver number to abbreviation mapping
+    driver_num_to_abbrev = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            driver_num_to_abbrev[str(row.get('DriverNumber', ''))] = row.get('Abbreviation', '')
     
     # Filter valid laps
     valid = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)].copy()
@@ -1430,21 +1437,29 @@ def plot_17_stint_degradation(data_dir, plots_dir):
         
         all_normalized_times = {}
         for _, stint in compound_stints.iterrows():
-            driver = stint['Driver']
+            driver_num = str(stint['Driver'])
+            # Convert driver number to abbreviation for matching
+            driver_abbrev = driver_num_to_abbrev.get(driver_num, driver_num)
+            
             lap_start = stint.get('LapStart', 1)
             lap_end = stint.get('LapEnd', lap_start + 10)
             
-            stint_laps = valid[(valid['Driver'].astype(str) == str(driver)) & 
-                               (valid['LapNumber'] >= lap_start) & 
-                               (valid['LapNumber'] <= lap_end)].sort_values('LapNumber')
+            # Match by abbreviation (Driver column in laps) or DriverNumber
+            stint_laps = valid[
+                ((valid['Driver'] == driver_abbrev) | (valid['DriverNumber'].astype(str) == driver_num)) & 
+                (valid['LapNumber'] >= lap_start) & 
+                (valid['LapNumber'] <= lap_end)
+            ].sort_values('LapNumber')
             
             if len(stint_laps) < 5:
                 continue
             
-            # Normalize lap times to stint start
-            base_time = stint_laps['LapTime_seconds'].iloc[0]
+            # Normalize lap times to stint start (skip first lap which is often slow)
+            base_time = stint_laps['LapTime_seconds'].iloc[1] if len(stint_laps) > 1 else stint_laps['LapTime_seconds'].iloc[0]
             for i, (_, lap) in enumerate(stint_laps.iterrows()):
-                tyre_age = i + 1
+                if i == 0:  # Skip first lap of stint
+                    continue
+                tyre_age = i
                 if tyre_age not in all_normalized_times:
                     all_normalized_times[tyre_age] = []
                 all_normalized_times[tyre_age].append(lap['LapTime_seconds'] - base_time)
@@ -1454,13 +1469,16 @@ def plot_17_stint_degradation(data_dir, plots_dir):
             avg_degradation = [np.mean(all_normalized_times[age]) for age in ages]
             
             color = COMPOUND_PLOT_COLORS.get(compound, '#888888')
-            ax.plot(ages, avg_degradation, marker='o', markersize=4, 
-                   linewidth=2, label=compound, color=color)
+            ax.plot(ages, avg_degradation, marker='o', markersize=6, 
+                   linewidth=2.5, label=compound, color=color, alpha=0.9)
+            
+            # Add fill
+            ax.fill_between(ages, 0, avg_degradation, color=color, alpha=0.2)
     
-    ax.set_xlabel('Tire Age (laps)', fontsize=11)
-    ax.set_ylabel('Lap Time Increase from Start (seconds)', fontsize=11)
+    ax.set_xlabel('Tire Age (laps into stint)', fontsize=11)
+    ax.set_ylabel('Lap Time Increase from Stint Start (seconds)', fontsize=11)
     ax.set_title('Average Tire Degradation by Compound', fontsize=12, fontweight='bold')
-    ax.legend()
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     ax.axhline(y=0, color='black', linewidth=0.5)
     
@@ -1469,36 +1487,47 @@ def plot_17_stint_degradation(data_dir, plots_dir):
     
     stint_data = []
     for _, stint in stints_df.iterrows():
-        driver = stint['Driver']
+        driver_num = str(stint['Driver'])
+        driver_abbrev = driver_num_to_abbrev.get(driver_num, driver_num)
+        
         lap_start = stint.get('LapStart', 1)
         lap_end = stint.get('LapEnd', lap_start + 10)
         compound = stint.get('Compound', 'UNKNOWN')
         
-        stint_laps = valid[(valid['Driver'].astype(str) == str(driver)) & 
-                           (valid['LapNumber'] >= lap_start) & 
-                           (valid['LapNumber'] <= lap_end)]
+        stint_laps = valid[
+            ((valid['Driver'] == driver_abbrev) | (valid['DriverNumber'].astype(str) == driver_num)) & 
+            (valid['LapNumber'] >= lap_start) & 
+            (valid['LapNumber'] <= lap_end)
+        ]
         
         if len(stint_laps) >= 3:
             stint_data.append({
+                'Driver': driver_abbrev,
                 'Length': len(stint_laps),
                 'AvgPace': stint_laps['LapTime_seconds'].mean(),
                 'Compound': compound.upper() if compound else 'UNKNOWN'
             })
     
     if stint_data:
-        stint_df = pd.DataFrame(stint_data)
+        stint_plot_df = pd.DataFrame(stint_data)
         
         for compound in ['MEDIUM', 'HARD']:
-            compound_data = stint_df[stint_df['Compound'] == compound]
+            compound_data = stint_plot_df[stint_plot_df['Compound'] == compound]
             if not compound_data.empty:
                 color = COMPOUND_PLOT_COLORS.get(compound, '#888888')
                 ax.scatter(compound_data['Length'], compound_data['AvgPace'],
-                          s=100, c=color, alpha=0.6, label=compound, edgecolors='white')
+                          s=150, c=color, alpha=0.7, label=compound, 
+                          edgecolors='white', linewidths=1.5)
+                
+                # Add driver labels
+                for _, row in compound_data.iterrows():
+                    ax.annotate(row['Driver'], (row['Length'], row['AvgPace']),
+                               xytext=(5, 0), textcoords='offset points', fontsize=8)
     
     ax.set_xlabel('Stint Length (laps)', fontsize=11)
     ax.set_ylabel('Average Lap Time (seconds)', fontsize=11)
     ax.set_title('Stint Length vs Average Pace', fontsize=12, fontweight='bold')
-    ax.legend()
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     
     plt.suptitle('Tire Stint Analysis', fontsize=16, fontweight='bold', y=1.02)
@@ -1510,7 +1539,7 @@ def plot_17_stint_degradation(data_dir, plots_dir):
 
 
 def plot_18_sector_dominance(data_dir, plots_dir):
-    """Show which drivers dominated which sectors."""
+    """Show which drivers dominated which sectors - with delta to fastest."""
     laps_df = load_csv(data_dir, 'laps.csv')
     drivers_df = load_csv(data_dir, 'drivers.csv')
     
@@ -1535,7 +1564,7 @@ def plot_18_sector_dominance(data_dir, plots_dir):
     for col in sector_cols:
         valid = valid[valid[col] > 0]
     
-    fig, axes = plt.subplots(1, 3, figsize=(18, 8))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 10))
     
     sector_names = ['Sector 1', 'Sector 2', 'Sector 3']
     
@@ -1545,25 +1574,404 @@ def plot_18_sector_dominance(data_dir, plots_dir):
         # Get best sector times per driver
         best_sectors = valid.groupby('Driver')[col].min().nsmallest(10)
         
+        # Calculate delta to fastest
+        fastest_time = best_sectors.min()
+        deltas = best_sectors - fastest_time
+        
         colors = [get_team_color(driver_teams.get(d, 'Unknown')) for d in best_sectors.index]
         
-        bars = ax.barh(range(len(best_sectors)), best_sectors.values, color=colors, alpha=0.8)
-        ax.set_yticks(range(len(best_sectors)))
-        ax.set_yticklabels(best_sectors.index)
-        ax.invert_yaxis()
-        ax.set_xlabel('Best Sector Time (seconds)', fontsize=10)
-        ax.set_title(name, fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3, axis='x')
+        # Create horizontal bars showing delta
+        y_pos = range(len(best_sectors))
+        bars = ax.barh(y_pos, deltas.values, color=colors, alpha=0.85, 
+                      edgecolor='white', linewidth=0.5)
         
-        # Highlight fastest
-        fastest = best_sectors.idxmin()
-        ax.text(0.02, 0.98, f"🏆 {fastest}", transform=ax.transAxes, 
-                fontsize=11, va='top', fontweight='bold',
-                color=get_team_color(driver_teams.get(fastest, 'Unknown')))
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(best_sectors.index, fontsize=11, fontweight='bold')
+        ax.invert_yaxis()
+        
+        # Add time labels on bars
+        for j, (driver, delta, actual) in enumerate(zip(best_sectors.index, deltas.values, best_sectors.values)):
+            # Show actual time at the end of bar
+            if delta < 0.01:  # Fastest
+                ax.text(0.01, j, f'{actual:.3f}s', va='center', ha='left', 
+                       fontsize=10, fontweight='bold', color='white',
+                       bbox=dict(boxstyle='round,pad=0.2', facecolor='green', alpha=0.8))
+            else:
+                ax.text(delta + 0.005, j, f'+{delta:.3f}s', va='center', ha='left', 
+                       fontsize=9, color='#333333')
+                # Show actual time inside bar if space
+                if delta > 0.1:
+                    ax.text(delta / 2, j, f'{actual:.3f}s', va='center', ha='center', 
+                           fontsize=8, color='white', alpha=0.9)
+        
+        ax.set_xlabel('Delta to Fastest (seconds)', fontsize=11)
+        ax.set_title(f'{name}\n🏆 {best_sectors.idxmin()} ({fastest_time:.3f}s)', 
+                    fontsize=13, fontweight='bold', color=get_team_color(driver_teams.get(best_sectors.idxmin(), 'Unknown')))
+        ax.grid(True, alpha=0.3, axis='x', linestyle='--')
+        ax.set_xlim(0, deltas.max() * 1.3)  # Add space for labels
+        
+        # Add vertical line at 0
+        ax.axvline(x=0, color='green', linewidth=2, alpha=0.7)
     
-    plt.suptitle('Sector Dominance - Best Times', fontsize=16, fontweight='bold', y=1.02)
+    plt.suptitle('Sector Dominance - Gap to Fastest', fontsize=18, fontweight='bold', y=1.02)
     plt.tight_layout()
     plt.savefig(os.path.join(plots_dir, '18_sector_dominance.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_20_race_start_analysis(data_dir, plots_dir):
+    """Analyze race starts - positions gained/lost and first lap performance."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    results_df = load_csv(data_dir, 'session_results.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    
+    if laps_df is None or laps_df.empty or results_df is None:
+        print("  ⚠️  No lap or results data")
+        return False
+    
+    # Get driver info
+    driver_teams = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            driver_teams[row.get('Abbreviation', '')] = row.get('TeamName', 'Unknown')
+            driver_teams[str(row.get('DriverNumber', ''))] = row.get('TeamName', 'Unknown')
+    
+    # Get lap 1 data
+    lap1 = laps_df[laps_df['LapNumber'] == 1].copy()
+    
+    if lap1.empty:
+        print("  ⚠️  No lap 1 data")
+        return False
+    
+    # Get grid positions and positions after lap 1
+    pos_col = 'Position' if 'Position' in results_df.columns else 'ClassifiedPosition'
+    results_df['GridPosition'] = pd.to_numeric(results_df['GridPosition'], errors='coerce')
+    
+    # Merge lap 1 data with grid positions
+    start_data = []
+    for _, row in lap1.iterrows():
+        driver = row.get('Driver', '')
+        driver_num = str(row.get('DriverNumber', ''))
+        
+        # Find grid position
+        driver_result = results_df[
+            (results_df['Abbreviation'] == driver) | 
+            (results_df['DriverNumber'].astype(str) == driver_num)
+        ]
+        
+        if driver_result.empty:
+            continue
+        
+        grid_pos = driver_result['GridPosition'].iloc[0]
+        
+        # Position after lap 1 (from lap data if available, otherwise estimate)
+        pos_after_lap1 = row.get('Position', grid_pos)
+        
+        # Lap 1 time
+        lap1_time = row.get('LapTime_seconds', None)
+        
+        # Sector 1 time (the actual start)
+        sector1_time = row.get('Sector1Time_seconds', None)
+        
+        team = driver_teams.get(driver, driver_teams.get(driver_num, 'Unknown'))
+        
+        if pd.notna(grid_pos):
+            start_data.append({
+                'Driver': driver if driver else driver_num,
+                'GridPosition': int(grid_pos),
+                'PositionAfterLap1': pos_after_lap1,
+                'Lap1Time': lap1_time,
+                'Sector1Time': sector1_time,
+                'Team': team,
+                'PositionsGained': int(grid_pos) - int(pos_after_lap1) if pd.notna(pos_after_lap1) else 0
+            })
+    
+    if not start_data:
+        print("  ⚠️  Could not build start data")
+        return False
+    
+    start_df = pd.DataFrame(start_data)
+    start_df = start_df.sort_values('GridPosition')
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 14))
+    
+    # 1. Positions Gained/Lost at Start (Top Left)
+    ax = axes[0, 0]
+    
+    # Sort by positions gained
+    sorted_by_gain = start_df.sort_values('PositionsGained', ascending=False)
+    
+    colors = []
+    for _, row in sorted_by_gain.iterrows():
+        if row['PositionsGained'] > 0:
+            colors.append('#27AE60')  # Green for gained
+        elif row['PositionsGained'] < 0:
+            colors.append('#E74C3C')  # Red for lost
+        else:
+            colors.append('#95A5A6')  # Gray for no change
+    
+    bars = ax.barh(range(len(sorted_by_gain)), sorted_by_gain['PositionsGained'].values, 
+                   color=colors, alpha=0.8, edgecolor='white')
+    
+    ax.set_yticks(range(len(sorted_by_gain)))
+    ax.set_yticklabels([f"{row['Driver']} (P{row['GridPosition']})" 
+                        for _, row in sorted_by_gain.iterrows()], fontsize=9)
+    ax.axvline(x=0, color='black', linewidth=1)
+    ax.set_xlabel('Positions Gained/Lost', fontsize=11)
+    ax.set_title('Positions Gained/Lost at Start', fontsize=13, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    
+    # Add value labels
+    for i, (_, row) in enumerate(sorted_by_gain.iterrows()):
+        val = row['PositionsGained']
+        label = f"+{val}" if val > 0 else str(val)
+        x_pos = val + 0.1 if val >= 0 else val - 0.1
+        ha = 'left' if val >= 0 else 'right'
+        ax.text(x_pos, i, label, va='center', ha=ha, fontsize=9, fontweight='bold')
+    
+    # 2. Lap 1 Times Comparison (Top Right)
+    ax = axes[0, 1]
+    
+    valid_lap1 = start_df[start_df['Lap1Time'].notna()].sort_values('Lap1Time')
+    
+    if not valid_lap1.empty:
+        fastest_lap1 = valid_lap1['Lap1Time'].min()
+        deltas = valid_lap1['Lap1Time'] - fastest_lap1
+        
+        colors = [get_team_color(row['Team']) for _, row in valid_lap1.iterrows()]
+        
+        bars = ax.barh(range(len(valid_lap1)), deltas.values, color=colors, alpha=0.85)
+        ax.set_yticks(range(len(valid_lap1)))
+        ax.set_yticklabels(valid_lap1['Driver'].values, fontsize=9, fontweight='bold')
+        ax.invert_yaxis()
+        ax.set_xlabel('Delta to Fastest Lap 1 (seconds)', fontsize=11)
+        ax.set_title(f'Lap 1 Times (Fastest: {valid_lap1.iloc[0]["Driver"]} - {fastest_lap1:.3f}s)', 
+                    fontsize=13, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Add time labels
+        for i, (_, row) in enumerate(valid_lap1.iterrows()):
+            delta = row['Lap1Time'] - fastest_lap1
+            ax.text(delta + 0.05, i, f"+{delta:.2f}s" if delta > 0 else "FASTEST", 
+                   va='center', fontsize=8)
+    
+    # 3. Grid vs Position After Lap 1 (Bottom Left)
+    ax = axes[1, 0]
+    
+    # Draw diagonal (no change line)
+    max_pos = 20
+    ax.plot([0, max_pos+1], [0, max_pos+1], 'k--', alpha=0.3, linewidth=2, label='No change')
+    
+    for _, row in start_df.iterrows():
+        color = get_team_color(row['Team'])
+        gained = row['PositionsGained']
+        
+        if gained > 0:
+            marker = '^'
+            size = 150 + gained * 20
+        elif gained < 0:
+            marker = 'v'
+            size = 150 + abs(gained) * 20
+        else:
+            marker = 'o'
+            size = 100
+        
+        ax.scatter(row['GridPosition'], row['PositionAfterLap1'], 
+                  s=size, c=color, marker=marker, edgecolors='white', 
+                  linewidths=1.5, alpha=0.8, zorder=3)
+        ax.annotate(row['Driver'], (row['GridPosition'], row['PositionAfterLap1']),
+                   xytext=(3, 3), textcoords='offset points', fontsize=8)
+    
+    ax.set_xlabel('Grid Position', fontsize=11)
+    ax.set_ylabel('Position After Lap 1', fontsize=11)
+    ax.set_title('Grid Position vs Position After Lap 1', fontsize=13, fontweight='bold')
+    ax.set_xlim(0, max_pos + 1)
+    ax.set_ylim(max_pos + 1, 0)
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal')
+    
+    # 4. Start Performance Summary (Bottom Right)
+    ax = axes[1, 1]
+    ax.axis('off')
+    
+    # Calculate summary stats
+    best_start = start_df.loc[start_df['PositionsGained'].idxmax()]
+    worst_start = start_df.loc[start_df['PositionsGained'].idxmin()]
+    
+    summary_text = f"""
+    RACE START SUMMARY
+    {'='*40}
+    
+    🚀 BEST START:
+       {best_start['Driver']} gained {best_start['PositionsGained']} positions
+       (P{best_start['GridPosition']} → P{int(best_start['PositionAfterLap1'])})
+    
+    😓 WORST START:
+       {worst_start['Driver']} lost {abs(worst_start['PositionsGained'])} positions
+       (P{worst_start['GridPosition']} → P{int(worst_start['PositionAfterLap1'])})
+    
+    📊 STATISTICS:
+       • Drivers who gained: {len(start_df[start_df['PositionsGained'] > 0])}
+       • Drivers who lost: {len(start_df[start_df['PositionsGained'] < 0])}
+       • No change: {len(start_df[start_df['PositionsGained'] == 0])}
+       • Avg positions changed: {start_df['PositionsGained'].abs().mean():.1f}
+    """
+    
+    # Add fastest lap 1 info if available
+    if not valid_lap1.empty:
+        fastest = valid_lap1.iloc[0]
+        summary_text += f"""
+    ⚡ FASTEST LAP 1:
+       {fastest['Driver']} - {fastest['Lap1Time']:.3f}s
+    """
+    
+    ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, fontsize=12,
+            va='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.3))
+    
+    fig.suptitle('Race Start Analysis', fontsize=18, fontweight='bold', y=1.02)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '20_race_start_analysis.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_19_stint_degradation_by_driver(data_dir, plots_dir):
+    """Show tire degradation for each driver in separate subplots."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    stints_df = load_csv(data_dir, 'stints.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    results_df = load_csv(data_dir, 'session_results.csv')
+    
+    if laps_df is None or laps_df.empty or stints_df is None:
+        print("  ⚠️  No lap or stint data")
+        return False
+    
+    if 'LapTime_seconds' not in laps_df.columns:
+        print("  ⚠️  No lap time data")
+        return False
+    
+    # Create driver number to abbreviation mapping
+    driver_num_to_abbrev = {}
+    driver_teams = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            num = str(row.get('DriverNumber', ''))
+            abbrev = row.get('Abbreviation', num)
+            driver_num_to_abbrev[num] = abbrev
+            driver_teams[abbrev] = row.get('TeamName', 'Unknown')
+            driver_teams[num] = row.get('TeamName', 'Unknown')
+    
+    # Get top 6 drivers by finishing position
+    top_drivers = []
+    if results_df is not None and not results_df.empty:
+        pos_col = 'Position' if 'Position' in results_df.columns else 'ClassifiedPosition'
+        if pos_col in results_df.columns:
+            results_df[pos_col] = pd.to_numeric(results_df[pos_col], errors='coerce')
+            ordered = results_df.dropna(subset=[pos_col]).sort_values(pos_col)
+            if 'Abbreviation' in ordered.columns:
+                top_drivers = ordered['Abbreviation'].head(6).tolist()
+            else:
+                top_drivers = ordered['DriverNumber'].astype(str).head(6).tolist()
+    
+    if not top_drivers:
+        top_drivers = list(driver_num_to_abbrev.values())[:6]
+    
+    # Filter valid laps
+    valid = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)].copy()
+    median_time = valid['LapTime_seconds'].median()
+    valid = valid[valid['LapTime_seconds'] < median_time * 1.15]
+    
+    # Create 2x3 subplot grid
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.flatten()
+    
+    for idx, driver_abbrev in enumerate(top_drivers[:6]):
+        ax = axes[idx]
+        
+        # Find driver number for stint matching
+        driver_num = None
+        for num, abbrev in driver_num_to_abbrev.items():
+            if abbrev == driver_abbrev:
+                driver_num = num
+                break
+        
+        if driver_num is None:
+            driver_num = driver_abbrev
+        
+        # Get stints for this driver
+        driver_stints = stints_df[stints_df['Driver'].astype(str) == driver_num]
+        
+        team = driver_teams.get(driver_abbrev, 'Unknown')
+        team_color = get_team_color(team)
+        
+        has_data = False
+        
+        for _, stint in driver_stints.iterrows():
+            lap_start = int(stint.get('LapStart', 1))
+            lap_end = int(stint.get('LapEnd', lap_start + 10))
+            compound = str(stint.get('Compound', 'UNKNOWN')).upper()
+            stint_num = int(stint.get('Stint', 1))
+            
+            # Get laps for this stint
+            stint_laps = valid[
+                ((valid['Driver'] == driver_abbrev) | (valid['DriverNumber'].astype(str) == driver_num)) & 
+                (valid['LapNumber'] >= lap_start) & 
+                (valid['LapNumber'] <= lap_end)
+            ].sort_values('LapNumber')
+            
+            if len(stint_laps) < 3:
+                continue
+            
+            has_data = True
+            
+            # Calculate tire age (laps into stint)
+            tire_ages = range(1, len(stint_laps) + 1)
+            lap_times = stint_laps['LapTime_seconds'].values
+            
+            # Normalize to first valid lap (skip outliers at stint start)
+            base_time = np.median(lap_times[:3]) if len(lap_times) >= 3 else lap_times[0]
+            normalized_times = lap_times - base_time
+            
+            compound_color = COMPOUND_PLOT_COLORS.get(compound, '#888888')
+            
+            # Plot the degradation curve
+            ax.plot(tire_ages, normalized_times, marker='o', markersize=5,
+                   linewidth=2, color=compound_color, alpha=0.9,
+                   label=f'Stint {stint_num} ({compound})')
+            
+            # Add fill under curve
+            ax.fill_between(tire_ages, 0, normalized_times, color=compound_color, alpha=0.15)
+        
+        # Styling
+        ax.set_title(f"P{idx+1}: {driver_abbrev} ({team})", fontsize=12, fontweight='bold',
+                    color=team_color)
+        ax.set_xlabel('Tire Age (laps)', fontsize=10)
+        ax.set_ylabel('Δ Lap Time (s)', fontsize=10)
+        ax.axhline(y=0, color='gray', linewidth=0.5, linestyle='--')
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.legend(loc='upper left', fontsize=9)
+        
+        if has_data:
+            # Set reasonable y-limits
+            ax.set_ylim(-1, 3)
+    
+    # Add compound legend at bottom
+    compound_legend = [mpatches.Patch(color=color, label=compound) 
+                       for compound, color in COMPOUND_PLOT_COLORS.items() 
+                       if compound not in ['UNKNOWN']]
+    fig.legend(handles=compound_legend, loc='lower center', ncol=5, fontsize=10,
+               title='Tire Compounds', title_fontsize=11, 
+               bbox_to_anchor=(0.5, -0.02))
+    
+    fig.suptitle('Tire Degradation by Driver', fontsize=18, fontweight='bold', y=1.02)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '19_stint_degradation_by_driver.png'), dpi=150, 
                 bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
     return True
@@ -1614,6 +2022,8 @@ def main():
         ("Teammate Comparison", plot_16_teammate_comparison),
         ("Stint Degradation", plot_17_stint_degradation),
         ("Sector Dominance", plot_18_sector_dominance),
+        ("Stint Degradation by Driver", plot_19_stint_degradation_by_driver),
+        ("Race Start Analysis", plot_20_race_start_analysis),
     ]
     
     results = {}
