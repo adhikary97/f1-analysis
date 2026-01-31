@@ -42,13 +42,16 @@ def main():
         session = load_race_data()
         driver_info = get_driver_info(session)
         
-        max_duration = 120 if args.quick else args.duration
-        max_frames = 200 if args.quick else 600
+        # Calculate number of laps
+        num_laps = 5 if args.quick else max(10, args.duration // 90)
+        max_frames = 300 if args.quick else 1200
+        
+        print(f"Animating {num_laps} laps...")
         
         anim_data = prepare_animation_data(
             session, 
-            time_resolution_ms=200,
-            max_duration_s=max_duration
+            time_resolution_ms=250,
+            num_laps=num_laps
         )
         
         create_html_animation(
