@@ -44,14 +44,24 @@ TEAM_COLORS = {
     'default': '#888888'
 }
 
-# Tire compound colors
+# Tire compound colors (official F1 colors, more vibrant)
 COMPOUND_COLORS = {
-    'SOFT': '#FF3333',
-    'MEDIUM': '#FFF200',
-    'HARD': '#EBEBEB',
-    'INTERMEDIATE': '#43B02A',
-    'WET': '#0067AD',
+    'SOFT': '#E8002D',      # Pirelli Red
+    'MEDIUM': '#FFD700',    # Golden Yellow
+    'HARD': '#F0F0F0',      # Light gray/white
+    'INTERMEDIATE': '#39B54A',  # Green
+    'WET': '#00AEEF',       # Blue
     'UNKNOWN': '#888888',
+}
+
+# For better visibility on plots, use these alternate colors
+COMPOUND_PLOT_COLORS = {
+    'SOFT': '#E8002D',      # Red
+    'MEDIUM': '#F5A623',    # Orange-yellow (more visible than pure yellow)
+    'HARD': '#4A90D9',      # Steel blue (much more visible than white/gray)
+    'INTERMEDIATE': '#2ECC71',  # Emerald green
+    'WET': '#3498DB',       # Bright blue
+    'UNKNOWN': '#95A5A6',
 }
 
 
@@ -564,9 +574,10 @@ def plot_08_telemetry_comparison(data_dir, plots_dir):
 
 
 def plot_09_lap_time_evolution(data_dir, plots_dir):
-    """Create lap time evolution showing tire degradation."""
+    """Create lap time evolution showing tire degradation with separate driver subplots."""
     laps_df = load_csv(data_dir, 'laps.csv')
-    stints_df = load_csv(data_dir, 'stints.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    results_df = load_csv(data_dir, 'session_results.csv')
     
     if laps_df is None or laps_df.empty:
         print("  ⚠️  No lap data for lap time evolution")
@@ -576,100 +587,984 @@ def plot_09_lap_time_evolution(data_dir, plots_dir):
         print("  ⚠️  No lap time data")
         return False
     
-    fig, ax = plt.subplots(figsize=(16, 8))
-    
-    # Get top 5 drivers by average pace
+    # Get top 6 drivers by finishing position or average pace
     valid_laps = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)]
     median_time = valid_laps['LapTime_seconds'].median()
-    valid_laps = valid_laps[valid_laps['LapTime_seconds'] < median_time * 1.15]
+    valid_laps = valid_laps[valid_laps['LapTime_seconds'] < median_time * 1.15].copy()
     
-    driver_avg = valid_laps.groupby('Driver')['LapTime_seconds'].mean().nsmallest(5)
-    top_drivers = driver_avg.index.tolist()
-    
-    for driver in top_drivers:
-        driver_laps = valid_laps[valid_laps['Driver'] == driver].sort_values('LapNumber')
-        
-        # Color by compound if available
-        if 'Compound' in driver_laps.columns:
-            for compound in driver_laps['Compound'].unique():
-                compound_laps = driver_laps[driver_laps['Compound'] == compound]
-                color = COMPOUND_COLORS.get(str(compound).upper(), COMPOUND_COLORS['UNKNOWN'])
-                ax.scatter(compound_laps['LapNumber'], compound_laps['LapTime_seconds'],
-                          color=color, s=30, alpha=0.7, label=f"{driver} - {compound}")
+    # Get driver order (by finishing position if available)
+    if results_df is not None and not results_df.empty:
+        pos_col = 'Position' if 'Position' in results_df.columns else 'ClassifiedPosition'
+        if pos_col in results_df.columns:
+            results_df[pos_col] = pd.to_numeric(results_df[pos_col], errors='coerce')
+            ordered = results_df.dropna(subset=[pos_col]).sort_values(pos_col)
+            # Map driver number to abbreviation
+            if 'Abbreviation' in ordered.columns:
+                top_drivers = ordered['Abbreviation'].head(6).tolist()
+            else:
+                top_drivers = ordered['DriverNumber'].astype(str).head(6).tolist()
         else:
-            ax.plot(driver_laps['LapNumber'], driver_laps['LapTime_seconds'],
-                   marker='o', markersize=4, label=str(driver), alpha=0.7)
+            driver_avg = valid_laps.groupby('Driver')['LapTime_seconds'].mean().nsmallest(6)
+            top_drivers = driver_avg.index.tolist()
+    else:
+        driver_avg = valid_laps.groupby('Driver')['LapTime_seconds'].mean().nsmallest(6)
+        top_drivers = driver_avg.index.tolist()
     
-    ax.set_xlabel('Lap Number', fontsize=12)
-    ax.set_ylabel('Lap Time (seconds)', fontsize=12)
-    ax.set_title('Lap Time Evolution (Tire Degradation)', fontsize=16, fontweight='bold', pad=20)
-    ax.legend(loc='upper right', fontsize=9, ncol=2)
-    ax.grid(True, alpha=0.3)
+    # Create driver name mapping
+    driver_names = {}
+    driver_teams = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            driver_num = str(row.get('DriverNumber', ''))
+            abbrev = row.get('Abbreviation', driver_num)
+            driver_names[driver_num] = abbrev
+            driver_names[abbrev] = abbrev
+            driver_teams[abbrev] = row.get('TeamName', 'Unknown')
+            driver_teams[driver_num] = row.get('TeamName', 'Unknown')
+    
+    # Create 2x3 subplot grid
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharey=True)
+    axes = axes.flatten()
+    
+    # Calculate global y-axis limits
+    all_times = []
+    for driver in top_drivers:
+        driver_laps = valid_laps[valid_laps['Driver'].astype(str) == str(driver)]
+        if not driver_laps.empty:
+            all_times.extend(driver_laps['LapTime_seconds'].tolist())
+    
+    if all_times:
+        y_min = min(all_times) - 1
+        y_max = max(all_times) + 1
+    else:
+        y_min, y_max = 85, 100
+    
+    for idx, driver in enumerate(top_drivers[:6]):
+        ax = axes[idx]
+        driver_laps = valid_laps[valid_laps['Driver'].astype(str) == str(driver)].sort_values('LapNumber')
+        
+        if driver_laps.empty:
+            ax.set_visible(False)
+            continue
+        
+        driver_name = driver_names.get(str(driver), str(driver))
+        team_name = driver_teams.get(str(driver), 'Unknown')
+        team_color = get_team_color(team_name)
+        
+        # Plot by stint/compound if available
+        if 'Compound' in driver_laps.columns and 'Stint' in driver_laps.columns:
+            for stint in sorted(driver_laps['Stint'].dropna().unique()):
+                stint_laps = driver_laps[driver_laps['Stint'] == stint].sort_values('LapNumber')
+                if stint_laps.empty:
+                    continue
+                
+                compound = str(stint_laps['Compound'].iloc[0]).upper()
+                compound_color = COMPOUND_PLOT_COLORS.get(compound, COMPOUND_PLOT_COLORS['UNKNOWN'])
+                
+                # Plot line with compound color
+                ax.plot(stint_laps['LapNumber'], stint_laps['LapTime_seconds'],
+                       color=compound_color, linewidth=2.5, alpha=0.9,
+                       label=f"Stint {int(stint)} ({compound})")
+                
+                # Add markers at start and end of stint
+                ax.scatter(stint_laps['LapNumber'].iloc[0], stint_laps['LapTime_seconds'].iloc[0],
+                          color=compound_color, s=60, zorder=5, edgecolor='black', linewidth=0.5)
+                ax.scatter(stint_laps['LapNumber'].iloc[-1], stint_laps['LapTime_seconds'].iloc[-1],
+                          color=compound_color, s=60, zorder=5, edgecolor='black', linewidth=0.5)
+        else:
+            # Simple line plot with team color
+            ax.plot(driver_laps['LapNumber'], driver_laps['LapTime_seconds'],
+                   color=team_color, linewidth=2, alpha=0.8, label=driver_name)
+        
+        # Styling
+        ax.set_title(f"P{idx+1}: {driver_name} ({team_name})", fontsize=12, fontweight='bold', 
+                     color=team_color)
+        ax.set_xlabel('Lap Number', fontsize=10)
+        if idx % 3 == 0:
+            ax.set_ylabel('Lap Time (seconds)', fontsize=10)
+        ax.set_ylim(y_min, y_max)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.legend(loc='upper right', fontsize=8)
+        
+        # Add horizontal line for driver's median pace
+        median_pace = driver_laps['LapTime_seconds'].median()
+        ax.axhline(y=median_pace, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+    
+    # Hide unused subplots
+    for idx in range(len(top_drivers), 6):
+        axes[idx].set_visible(False)
+    
+    # Add compound legend at bottom
+    compound_legend = [mpatches.Patch(color=color, label=compound) 
+                       for compound, color in COMPOUND_PLOT_COLORS.items() 
+                       if compound not in ['UNKNOWN']]
+    fig.legend(handles=compound_legend, loc='lower center', ncol=5, fontsize=10,
+               title='Tire Compounds', title_fontsize=11, 
+               bbox_to_anchor=(0.5, -0.02))
+    
+    fig.suptitle('Lap Time Evolution by Driver', fontsize=18, fontweight='bold', y=1.02)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, '09_lap_time_evolution.png'), dpi=150, bbox_inches='tight',
-                facecolor='white', edgecolor='none')
+    plt.savefig(os.path.join(plots_dir, '09_lap_time_evolution.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
     return True
 
 
 def plot_10_race_control_timeline(data_dir, plots_dir):
-    """Create a timeline of race control messages."""
+    """Create a clean swim-lane timeline of race control messages."""
     rc_df = load_csv(data_dir, 'race_control.csv')
     laps_df = load_csv(data_dir, 'laps.csv')
+    event_info = load_csv(data_dir, 'event_info.csv')
     
     if rc_df is None or rc_df.empty:
         print("  ⚠️  No race control data")
         return False
     
-    fig, ax = plt.subplots(figsize=(16, 8))
-    
     # Get total laps
-    total_laps = laps_df['LapNumber'].max() if laps_df is not None else 60
+    total_laps = int(laps_df['LapNumber'].max()) if laps_df is not None else 58
     
-    # Color by category
-    category_colors = {
-        'Flag': '#FFFF00',
-        'SafetyCar': '#FFA500',
-        'Drs': '#00FF00',
-        'CarEvent': '#FF0000',
-        'Other': '#888888',
+    # Categorize events into lanes
+    lanes = {
+        'Safety Car / VSC': {'keywords': ['SAFETY CAR', 'VSC', 'VIRTUAL'], 'color': '#FF8C00', 'events': []},
+        'Yellow Flags': {'keywords': ['YELLOW', 'DOUBLE YELLOW'], 'color': '#FFD700', 'events': []},
+        'Incidents': {'keywords': ['INCIDENT', 'COLLISION', 'NOTED'], 'color': '#E74C3C', 'events': []},
+        'Investigations': {'keywords': ['INVESTIGATION', 'UNDER INVESTIGATION', 'REVIEWED'], 'color': '#9B59B6', 'events': []},
+        'Penalties': {'keywords': ['PENALTY', 'TIME PENALTY', 'WARNING', 'BLACK AND WHITE', 'REPRIMAND'], 'color': '#C0392B', 'events': []},
+        'DRS': {'keywords': ['DRS'], 'color': '#27AE60', 'events': []},
+        'Track Limits': {'keywords': ['TRACK LIMITS', 'DELETED'], 'color': '#3498DB', 'events': []},
     }
     
-    categories_seen = set()
-    
-    for i, (_, row) in enumerate(rc_df.iterrows()):
-        category = row.get('Category', 'Other')
-        message = row.get('Message', '')
-        lap = row.get('Lap', i + 1)
-        
+    # Assign events to lanes
+    for _, row in rc_df.iterrows():
+        message = str(row.get('Message', '')).upper()
+        lap = row.get('Lap', 1)
         if pd.isna(lap):
-            lap = i + 1
+            lap = 1
         
-        color = category_colors.get(category, category_colors['Other'])
-        categories_seen.add(category)
-        
-        ax.axvline(x=lap, color=color, alpha=0.5, linewidth=2)
-        
-        # Add text for important messages
-        if category in ['Flag', 'SafetyCar']:
-            ax.text(lap, 0.5 + (i % 5) * 0.1, str(message)[:40], 
-                   rotation=90, fontsize=8, va='bottom', ha='right')
+        assigned = False
+        for lane_name, lane_data in lanes.items():
+            if any(kw in message for kw in lane_data['keywords']):
+                lane_data['events'].append({'lap': int(lap), 'message': row.get('Message', '')})
+                assigned = True
+                break
     
-    ax.set_xlim(0, total_laps + 5)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel('Lap Number', fontsize=12)
-    ax.set_title('Race Control Messages Timeline', fontsize=16, fontweight='bold', pad=20)
+    # Create figure
+    fig, ax = plt.subplots(figsize=(18, 10))
+    
+    # Title
+    race_name = event_info['EventName'].iloc[0] if event_info is not None else "Race"
+    ax.set_title(f'Race Control Timeline - {race_name}', fontsize=18, fontweight='bold', pad=20)
+    
+    # Draw lanes
+    lane_names = list(lanes.keys())
+    lane_height = 0.8
+    
+    for i, (lane_name, lane_data) in enumerate(lanes.items()):
+        y_center = len(lanes) - i - 0.5
+        
+        # Draw lane background
+        ax.axhspan(y_center - lane_height/2, y_center + lane_height/2, 
+                   alpha=0.1, color=lane_data['color'])
+        
+        # Draw lane label
+        ax.text(-2, y_center, lane_name, ha='right', va='center', fontsize=11, 
+                fontweight='bold', color=lane_data['color'])
+        
+        # Draw events as markers
+        event_laps = [e['lap'] for e in lane_data['events']]
+        if event_laps:
+            # Count events per lap for sizing
+            lap_counts = {}
+            for lap in event_laps:
+                lap_counts[lap] = lap_counts.get(lap, 0) + 1
+            
+            unique_laps = list(lap_counts.keys())
+            sizes = [50 + lap_counts[lap] * 30 for lap in unique_laps]
+            
+            ax.scatter(unique_laps, [y_center] * len(unique_laps), 
+                      s=sizes, c=lane_data['color'], alpha=0.7, 
+                      edgecolors='white', linewidths=1, zorder=3)
+            
+            # Add count labels for multiple events
+            for lap, count in lap_counts.items():
+                if count > 1:
+                    ax.text(lap, y_center, str(count), ha='center', va='center',
+                           fontsize=8, fontweight='bold', color='white', zorder=4)
+    
+    # Draw lap grid
+    for lap in range(0, total_laps + 1, 5):
+        ax.axvline(x=lap, color='gray', alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.text(lap, -0.3, str(lap), ha='center', va='top', fontsize=9, color='gray')
+    
+    # Highlight key race phases
+    # Start
+    ax.axvline(x=1, color='green', alpha=0.5, linewidth=2, linestyle='-')
+    ax.text(1, len(lanes) + 0.3, 'START', ha='center', va='bottom', fontsize=9, 
+            color='green', fontweight='bold')
+    
+    # Finish
+    ax.axvline(x=total_laps, color='#E8002D', alpha=0.5, linewidth=2, linestyle='-')
+    ax.text(total_laps, len(lanes) + 0.3, 'FINISH', ha='center', va='bottom', fontsize=9,
+            color='#E8002D', fontweight='bold')
+    
+    # Styling
+    ax.set_xlim(-1, total_laps + 3)
+    ax.set_ylim(-0.8, len(lanes) + 0.8)
+    ax.set_xlabel('Lap Number', fontsize=12, labelpad=10)
     ax.set_yticks([])
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
     
-    # Add legend
-    legend_patches = [mpatches.Patch(color=color, label=cat) 
-                      for cat, color in category_colors.items() if cat in categories_seen]
-    ax.legend(handles=legend_patches, loc='upper right', fontsize=10)
+    # Add summary stats at bottom
+    summary_text = []
+    for lane_name, lane_data in lanes.items():
+        count = len(lane_data['events'])
+        if count > 0:
+            summary_text.append(f"{lane_name}: {count}")
+    
+    ax.text(0.5, -0.12, ' | '.join(summary_text), transform=ax.transAxes,
+            ha='center', va='top', fontsize=10, color='gray', style='italic')
     
     plt.tight_layout()
     plt.savefig(os.path.join(plots_dir, '10_race_control_timeline.png'), dpi=150, bbox_inches='tight',
                 facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_11_race_events_list(data_dir, plots_dir):
+    """Create a clean list of key race events with lap numbers."""
+    rc_df = load_csv(data_dir, 'race_control.csv')
+    event_info = load_csv(data_dir, 'event_info.csv')
+    
+    if rc_df is None or rc_df.empty:
+        print("  ⚠️  No race control data")
+        return False
+    
+    # Filter for important events (exclude routine DRS enable/disable, track limits)
+    important_keywords = [
+        'INCIDENT', 'INVESTIGATION', 'PENALTY', 'SAFETY CAR', 'VSC', 
+        'RED FLAG', 'YELLOW', 'COLLISION', 'RETIRED', 'DNF', 
+        'BLACK AND WHITE', 'TIME PENALTY', 'DRIVE THROUGH', 'STOP AND GO',
+        'WARNING', 'REPRIMAND', 'DISQUALIFIED'
+    ]
+    
+    # Also include flag changes
+    flag_events = rc_df[rc_df['Category'] == 'Flag'].copy()
+    
+    # Filter other events by keywords
+    other_events = rc_df[rc_df['Category'] != 'Flag'].copy()
+    mask = other_events['Message'].str.upper().apply(
+        lambda x: any(kw in str(x).upper() for kw in important_keywords)
+    )
+    other_events = other_events[mask]
+    
+    # Combine and sort
+    key_events = pd.concat([flag_events, other_events]).drop_duplicates()
+    if 'Lap' in key_events.columns:
+        key_events = key_events.sort_values('Lap')
+    
+    # Limit to most important 25 events
+    key_events = key_events.head(25)
+    
+    if key_events.empty:
+        # If no key events, just show first 20 events
+        key_events = rc_df.head(20)
+    
+    # Create figure with table-like layout
+    fig, ax = plt.subplots(figsize=(16, 12))
+    ax.axis('off')
+    
+    # Title
+    race_name = event_info['EventName'].iloc[0] if event_info is not None else "Race"
+    fig.suptitle(f'Key Race Events - {race_name}', fontsize=18, fontweight='bold', y=0.98)
+    
+    # Event type colors
+    event_colors = {
+        'Flag': '#FFD700',
+        'SafetyCar': '#FF8C00',
+        'Drs': '#32CD32',
+        'Other': '#4A90D9',
+        'Penalty': '#E8002D',
+    }
+    
+    # Draw events as a list
+    y_start = 0.92
+    y_step = 0.035
+    
+    for i, (_, row) in enumerate(key_events.iterrows()):
+        y_pos = y_start - (i * y_step)
+        if y_pos < 0.05:
+            break
+        
+        lap = row.get('Lap', '?')
+        if pd.isna(lap):
+            lap = '?'
+        else:
+            lap = int(lap)
+        
+        category = row.get('Category', 'Other')
+        message = str(row.get('Message', ''))[:80]  # Truncate long messages
+        
+        # Determine color based on content
+        if 'PENALTY' in message.upper() or 'INVESTIGATION' in message.upper():
+            color = event_colors['Penalty']
+        else:
+            color = event_colors.get(category, event_colors['Other'])
+        
+        # Draw lap number box
+        lap_text = f"Lap {lap:>2}" if isinstance(lap, int) else f"Lap {lap}"
+        ax.text(0.02, y_pos, lap_text, transform=ax.transAxes, fontsize=11, 
+                fontweight='bold', fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor=color, alpha=0.3, edgecolor=color))
+        
+        # Draw category badge
+        cat_short = category[:4].upper()
+        ax.text(0.12, y_pos, cat_short, transform=ax.transAxes, fontsize=9,
+                fontweight='bold', color='white',
+                bbox=dict(boxstyle='round,pad=0.2', facecolor=color, alpha=0.8))
+        
+        # Draw message
+        ax.text(0.19, y_pos, message, transform=ax.transAxes, fontsize=10,
+                fontfamily='sans-serif', va='center')
+    
+    # Add legend at bottom
+    legend_y = 0.02
+    legend_x = 0.1
+    for cat, color in event_colors.items():
+        ax.add_patch(mpatches.FancyBboxPatch((legend_x, legend_y), 0.08, 0.025, 
+                                              boxstyle='round,pad=0.01',
+                                              facecolor=color, alpha=0.7,
+                                              transform=ax.transAxes))
+        ax.text(legend_x + 0.04, legend_y + 0.012, cat, transform=ax.transAxes,
+                fontsize=9, ha='center', va='center', fontweight='bold')
+        legend_x += 0.12
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '11_race_events_list.png'), dpi=150, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_12_position_changes(data_dir, plots_dir):
+    """Create a bump chart showing position changes throughout the race."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    results_df = load_csv(data_dir, 'session_results.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    
+    if laps_df is None or laps_df.empty:
+        print("  ⚠️  No lap data")
+        return False
+    
+    if 'Position' not in laps_df.columns:
+        print("  ⚠️  No position data in laps")
+        return False
+    
+    fig, ax = plt.subplots(figsize=(18, 10))
+    
+    # Get driver info
+    driver_teams = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            driver_teams[str(row.get('DriverNumber', ''))] = row.get('TeamName', 'Unknown')
+            driver_teams[row.get('Abbreviation', '')] = row.get('TeamName', 'Unknown')
+    
+    # Get finishing order for legend
+    if results_df is not None:
+        pos_col = 'Position' if 'Position' in results_df.columns else 'ClassifiedPosition'
+        results_df[pos_col] = pd.to_numeric(results_df[pos_col], errors='coerce')
+        ordered = results_df.dropna(subset=[pos_col]).sort_values(pos_col)
+        driver_order = ordered['Abbreviation'].tolist() if 'Abbreviation' in ordered.columns else []
+    else:
+        driver_order = laps_df['Driver'].unique().tolist()
+    
+    # Plot each driver's position over laps
+    for driver in driver_order[:15]:  # Top 15
+        driver_laps = laps_df[laps_df['Driver'] == driver].sort_values('LapNumber')
+        if driver_laps.empty or 'Position' not in driver_laps.columns:
+            continue
+        
+        positions = driver_laps['Position'].values
+        lap_numbers = driver_laps['LapNumber'].values
+        
+        team = driver_teams.get(driver, 'Unknown')
+        color = get_team_color(team)
+        
+        ax.plot(lap_numbers, positions, linewidth=2.5, label=driver, 
+                color=color, alpha=0.85)
+        
+        # Add driver label at end
+        if len(positions) > 0:
+            ax.text(lap_numbers[-1] + 0.5, positions[-1], driver, 
+                    fontsize=9, va='center', color=color, fontweight='bold')
+    
+    ax.set_xlabel('Lap Number', fontsize=12)
+    ax.set_ylabel('Position', fontsize=12)
+    ax.set_title('Race Position Changes', fontsize=18, fontweight='bold', pad=20)
+    ax.set_ylim(20.5, 0.5)  # Invert so P1 is at top
+    ax.set_xlim(0, laps_df['LapNumber'].max() + 3)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_yticks(range(1, 21))
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '12_position_changes.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_13_grid_vs_finish(data_dir, plots_dir):
+    """Create scatter plot comparing grid position to finish position."""
+    results_df = load_csv(data_dir, 'session_results.csv')
+    
+    if results_df is None or results_df.empty:
+        print("  ⚠️  No results data")
+        return False
+    
+    if 'GridPosition' not in results_df.columns:
+        print("  ⚠️  No grid position data")
+        return False
+    
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    pos_col = 'Position' if 'Position' in results_df.columns else 'ClassifiedPosition'
+    results_df['Grid'] = pd.to_numeric(results_df['GridPosition'], errors='coerce')
+    results_df['Finish'] = pd.to_numeric(results_df[pos_col], errors='coerce')
+    
+    valid = results_df.dropna(subset=['Grid', 'Finish'])
+    
+    # Draw diagonal line (no change)
+    ax.plot([0, 21], [0, 21], 'k--', alpha=0.3, linewidth=2, label='No change')
+    
+    # Color regions
+    ax.fill_between([0, 21], [0, 21], [21, 21], alpha=0.1, color='red', label='Lost positions')
+    ax.fill_between([0, 21], [0, 0], [0, 21], alpha=0.1, color='green', label='Gained positions')
+    
+    # Plot each driver
+    for _, row in valid.iterrows():
+        team = row.get('TeamName', 'Unknown')
+        color = get_team_color(team)
+        driver = row.get('Abbreviation', str(row.get('DriverNumber', '')))
+        
+        gained = row['Grid'] - row['Finish']
+        marker = '^' if gained > 0 else ('v' if gained < 0 else 'o')
+        size = 150 + abs(gained) * 30
+        
+        ax.scatter(row['Grid'], row['Finish'], s=size, c=color, 
+                   marker=marker, edgecolors='white', linewidths=1.5, zorder=3)
+        ax.annotate(driver, (row['Grid'], row['Finish']), 
+                    xytext=(5, 5), textcoords='offset points',
+                    fontsize=9, fontweight='bold')
+    
+    ax.set_xlabel('Grid Position', fontsize=12)
+    ax.set_ylabel('Finish Position', fontsize=12)
+    ax.set_title('Grid Position vs Finish Position', fontsize=16, fontweight='bold', pad=20)
+    ax.set_xlim(0, 21)
+    ax.set_ylim(21, 0)  # Invert Y
+    ax.set_xticks(range(1, 21))
+    ax.set_yticks(range(1, 21))
+    ax.set_aspect('equal')
+    ax.legend(loc='lower right', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    # Add annotations
+    biggest_gain = valid.loc[(valid['Grid'] - valid['Finish']).idxmax()]
+    biggest_loss = valid.loc[(valid['Grid'] - valid['Finish']).idxmin()]
+    
+    ax.text(0.02, 0.98, f"Biggest Gain: {biggest_gain['Abbreviation']} (+{int(biggest_gain['Grid'] - biggest_gain['Finish'])})", 
+            transform=ax.transAxes, fontsize=10, va='top', color='green', fontweight='bold')
+    ax.text(0.02, 0.93, f"Biggest Loss: {biggest_loss['Abbreviation']} ({int(biggest_loss['Grid'] - biggest_loss['Finish'])})", 
+            transform=ax.transAxes, fontsize=10, va='top', color='red', fontweight='bold')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '13_grid_vs_finish.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_14_compound_performance(data_dir, plots_dir):
+    """Compare average lap times on different tire compounds."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    
+    if laps_df is None or laps_df.empty:
+        print("  ⚠️  No lap data")
+        return False
+    
+    if 'Compound' not in laps_df.columns or 'LapTime_seconds' not in laps_df.columns:
+        print("  ⚠️  No compound or lap time data")
+        return False
+    
+    # Filter valid laps
+    valid = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)].copy()
+    median_time = valid['LapTime_seconds'].median()
+    valid = valid[valid['LapTime_seconds'] < median_time * 1.1]  # Remove pit laps
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    
+    # Left: Box plot by compound
+    compounds = ['SOFT', 'MEDIUM', 'HARD']
+    compound_data = []
+    compound_labels = []
+    compound_colors = []
+    
+    for compound in compounds:
+        data = valid[valid['Compound'].str.upper() == compound]['LapTime_seconds']
+        if not data.empty:
+            compound_data.append(data.values)
+            compound_labels.append(compound)
+            compound_colors.append(COMPOUND_PLOT_COLORS.get(compound, '#888888'))
+    
+    if compound_data:
+        bp = axes[0].boxplot(compound_data, labels=compound_labels, patch_artist=True)
+        for patch, color in zip(bp['boxes'], compound_colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        
+        axes[0].set_ylabel('Lap Time (seconds)', fontsize=11)
+        axes[0].set_xlabel('Tire Compound', fontsize=11)
+        axes[0].set_title('Lap Time Distribution by Compound', fontsize=12, fontweight='bold')
+        axes[0].grid(True, alpha=0.3, axis='y')
+    
+    # Right: Average pace by compound per driver (top 5)
+    driver_avg = valid.groupby('Driver')['LapTime_seconds'].mean().nsmallest(5)
+    top_drivers = driver_avg.index.tolist()
+    
+    x = np.arange(len(top_drivers))
+    width = 0.25
+    
+    for i, compound in enumerate(compounds):
+        compound_times = []
+        for driver in top_drivers:
+            driver_compound = valid[(valid['Driver'] == driver) & 
+                                    (valid['Compound'].str.upper() == compound)]
+            if not driver_compound.empty:
+                compound_times.append(driver_compound['LapTime_seconds'].mean())
+            else:
+                compound_times.append(np.nan)
+        
+        color = COMPOUND_PLOT_COLORS.get(compound, '#888888')
+        bars = axes[1].bar(x + i * width, compound_times, width, 
+                          label=compound, color=color, alpha=0.8)
+    
+    axes[1].set_ylabel('Average Lap Time (seconds)', fontsize=11)
+    axes[1].set_xlabel('Driver', fontsize=11)
+    axes[1].set_title('Average Pace by Compound (Top 5 Drivers)', fontsize=12, fontweight='bold')
+    axes[1].set_xticks(x + width)
+    axes[1].set_xticklabels(top_drivers)
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3, axis='y')
+    
+    plt.suptitle('Tire Compound Performance Analysis', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '14_compound_performance.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_15_driver_consistency(data_dir, plots_dir):
+    """Compare driver consistency (standard deviation of lap times)."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    results_df = load_csv(data_dir, 'session_results.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    
+    if laps_df is None or laps_df.empty:
+        print("  ⚠️  No lap data")
+        return False
+    
+    if 'LapTime_seconds' not in laps_df.columns:
+        print("  ⚠️  No lap time data")
+        return False
+    
+    # Filter valid laps
+    valid = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)].copy()
+    median_time = valid['LapTime_seconds'].median()
+    valid = valid[valid['LapTime_seconds'] < median_time * 1.08]  # Remove outliers
+    
+    # Calculate stats per driver
+    driver_stats = []
+    for driver in valid['Driver'].unique():
+        driver_laps = valid[valid['Driver'] == driver]['LapTime_seconds']
+        if len(driver_laps) >= 10:  # Need enough laps
+            driver_stats.append({
+                'Driver': driver,
+                'Mean': driver_laps.mean(),
+                'Std': driver_laps.std(),
+                'Min': driver_laps.min(),
+                'Max': driver_laps.max(),
+                'Count': len(driver_laps)
+            })
+    
+    stats_df = pd.DataFrame(driver_stats)
+    
+    # Get team colors
+    driver_teams = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            driver_teams[str(row.get('DriverNumber', ''))] = row.get('TeamName', 'Unknown')
+            driver_teams[row.get('Abbreviation', '')] = row.get('TeamName', 'Unknown')
+    
+    # Sort by mean pace
+    stats_df = stats_df.sort_values('Mean')
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    
+    # Left: Consistency (std dev) - lower is better
+    colors = [get_team_color(driver_teams.get(d, 'Unknown')) for d in stats_df['Driver']]
+    bars = axes[0].barh(stats_df['Driver'], stats_df['Std'], color=colors, alpha=0.8)
+    axes[0].set_xlabel('Lap Time Standard Deviation (seconds)', fontsize=11)
+    axes[0].set_ylabel('Driver', fontsize=11)
+    axes[0].set_title('Driver Consistency (Lower = More Consistent)', fontsize=12, fontweight='bold')
+    axes[0].grid(True, alpha=0.3, axis='x')
+    
+    # Add values
+    for bar, val in zip(bars, stats_df['Std']):
+        axes[0].text(val + 0.05, bar.get_y() + bar.get_height()/2, 
+                    f'{val:.2f}s', va='center', fontsize=9)
+    
+    # Right: Pace vs Consistency scatter
+    for _, row in stats_df.iterrows():
+        team = driver_teams.get(row['Driver'], 'Unknown')
+        color = get_team_color(team)
+        axes[1].scatter(row['Mean'], row['Std'], s=150, c=color, 
+                       edgecolors='white', linewidths=1.5, alpha=0.8)
+        axes[1].annotate(row['Driver'], (row['Mean'], row['Std']),
+                        xytext=(5, 5), textcoords='offset points', fontsize=9)
+    
+    axes[1].set_xlabel('Average Lap Time (seconds) - Faster →', fontsize=11)
+    axes[1].set_ylabel('Standard Deviation (seconds) - More Consistent ↓', fontsize=11)
+    axes[1].set_title('Pace vs Consistency', fontsize=12, fontweight='bold')
+    axes[1].grid(True, alpha=0.3)
+    
+    # Highlight ideal quadrant (fast + consistent)
+    xlim = axes[1].get_xlim()
+    ylim = axes[1].get_ylim()
+    mid_x = (xlim[0] + xlim[1]) / 2
+    mid_y = (ylim[0] + ylim[1]) / 2
+    axes[1].axhline(y=mid_y, color='gray', linestyle='--', alpha=0.3)
+    axes[1].axvline(x=mid_x, color='gray', linestyle='--', alpha=0.3)
+    axes[1].text(xlim[0], ylim[0], 'FAST & CONSISTENT', fontsize=10, 
+                color='green', alpha=0.7, fontweight='bold')
+    
+    plt.suptitle('Driver Consistency Analysis', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '15_driver_consistency.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_16_teammate_comparison(data_dir, plots_dir):
+    """Compare teammates head-to-head."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    results_df = load_csv(data_dir, 'session_results.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    
+    if results_df is None or results_df.empty or drivers_df is None:
+        print("  ⚠️  No results or driver data")
+        return False
+    
+    # Group drivers by team
+    teams = {}
+    for _, row in results_df.iterrows():
+        team = row.get('TeamName', 'Unknown')
+        if team not in teams:
+            teams[team] = []
+        teams[team].append({
+            'Abbreviation': row.get('Abbreviation', ''),
+            'Position': row.get('Position', row.get('ClassifiedPosition', 99)),
+            'Points': row.get('Points', 0),
+        })
+    
+    # Filter teams with 2 drivers
+    valid_teams = {k: v for k, v in teams.items() if len(v) == 2}
+    
+    if not valid_teams:
+        print("  ⚠️  No complete team pairs")
+        return False
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    
+    # 1. Position comparison
+    ax = axes[0, 0]
+    team_names = list(valid_teams.keys())
+    x = np.arange(len(team_names))
+    
+    driver1_pos = []
+    driver2_pos = []
+    driver1_names = []
+    driver2_names = []
+    team_colors = []
+    
+    for team in team_names:
+        drivers = sorted(valid_teams[team], key=lambda x: x['Position'])
+        driver1_pos.append(drivers[0]['Position'])
+        driver2_pos.append(drivers[1]['Position'])
+        driver1_names.append(drivers[0]['Abbreviation'])
+        driver2_names.append(drivers[1]['Abbreviation'])
+        team_colors.append(get_team_color(team))
+    
+    for i, (pos1, pos2, name1, name2, color) in enumerate(zip(driver1_pos, driver2_pos, 
+                                                               driver1_names, driver2_names, team_colors)):
+        ax.plot([i, i], [pos1, pos2], color=color, linewidth=3, alpha=0.6)
+        ax.scatter([i], [pos1], s=150, color=color, zorder=3, edgecolors='white', linewidths=2)
+        ax.scatter([i], [pos2], s=150, color=color, zorder=3, edgecolors='white', linewidths=2, alpha=0.5)
+        ax.text(i + 0.1, pos1, name1, fontsize=9, va='center', fontweight='bold')
+        ax.text(i + 0.1, pos2, name2, fontsize=9, va='center', alpha=0.7)
+    
+    ax.set_xticks(x)
+    ax.set_xticklabels([t[:12] for t in team_names], rotation=45, ha='right', fontsize=9)
+    ax.set_ylabel('Finish Position')
+    ax.set_ylim(21, 0)
+    ax.set_title('Teammate Position Comparison', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # 2. Points comparison (if available)
+    ax = axes[0, 1]
+    driver1_pts = []
+    driver2_pts = []
+    
+    for team in team_names:
+        drivers = sorted(valid_teams[team], key=lambda x: -x.get('Points', 0))
+        driver1_pts.append(drivers[0].get('Points', 0))
+        driver2_pts.append(drivers[1].get('Points', 0))
+    
+    width = 0.35
+    ax.bar(x - width/2, driver1_pts, width, color=team_colors, alpha=0.9, label='Leader')
+    ax.bar(x + width/2, driver2_pts, width, color=team_colors, alpha=0.5, label='Other')
+    ax.set_xticks(x)
+    ax.set_xticklabels([t[:12] for t in team_names], rotation=45, ha='right', fontsize=9)
+    ax.set_ylabel('Points Scored')
+    ax.set_title('Teammate Points Comparison', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # 3. Average pace comparison (if lap data available)
+    ax = axes[1, 0]
+    if laps_df is not None and 'LapTime_seconds' in laps_df.columns:
+        valid_laps = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)]
+        median_time = valid_laps['LapTime_seconds'].median()
+        valid_laps = valid_laps[valid_laps['LapTime_seconds'] < median_time * 1.08]
+        
+        driver1_pace = []
+        driver2_pace = []
+        
+        for team in team_names:
+            drivers = valid_teams[team]
+            pace = []
+            for d in drivers:
+                driver_laps = valid_laps[valid_laps['Driver'] == d['Abbreviation']]
+                if not driver_laps.empty:
+                    pace.append(driver_laps['LapTime_seconds'].mean())
+                else:
+                    pace.append(np.nan)
+            
+            pace.sort()  # Faster first
+            driver1_pace.append(pace[0] if len(pace) > 0 else np.nan)
+            driver2_pace.append(pace[1] if len(pace) > 1 else np.nan)
+        
+        # Calculate gap
+        gaps = [p2 - p1 if not (np.isnan(p1) or np.isnan(p2)) else 0 for p1, p2 in zip(driver1_pace, driver2_pace)]
+        
+        bars = ax.bar(x, gaps, color=team_colors, alpha=0.8)
+        ax.set_xticks(x)
+        ax.set_xticklabels([t[:12] for t in team_names], rotation=45, ha='right', fontsize=9)
+        ax.set_ylabel('Pace Gap (seconds)')
+        ax.set_title('Average Pace Gap Between Teammates', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.axhline(y=0, color='black', linewidth=0.5)
+    
+    # 4. Summary text
+    ax = axes[1, 1]
+    ax.axis('off')
+    
+    summary_lines = ['TEAM BATTLE SUMMARY\n']
+    for team in team_names:
+        drivers = sorted(valid_teams[team], key=lambda x: x['Position'])
+        winner = drivers[0]['Abbreviation']
+        loser = drivers[1]['Abbreviation']
+        gap = int(drivers[1]['Position']) - int(drivers[0]['Position'])
+        summary_lines.append(f"{team[:15]}: {winner} beat {loser} by {gap} places")
+    
+    ax.text(0.1, 0.9, '\n'.join(summary_lines), transform=ax.transAxes,
+            fontsize=11, va='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+    
+    plt.suptitle('Teammate Head-to-Head Comparison', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '16_teammate_comparison.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_17_stint_degradation(data_dir, plots_dir):
+    """Analyze tire degradation within stints."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    stints_df = load_csv(data_dir, 'stints.csv')
+    
+    if laps_df is None or laps_df.empty or stints_df is None:
+        print("  ⚠️  No lap or stint data")
+        return False
+    
+    if 'LapTime_seconds' not in laps_df.columns:
+        print("  ⚠️  No lap time data")
+        return False
+    
+    # Filter valid laps
+    valid = laps_df[(laps_df['LapTime_seconds'] > 0) & (laps_df['LapTime_seconds'] < 200)].copy()
+    median_time = valid['LapTime_seconds'].median()
+    valid = valid[valid['LapTime_seconds'] < median_time * 1.1]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    
+    # Left: Degradation per lap for each compound
+    ax = axes[0]
+    
+    compounds = ['MEDIUM', 'HARD']
+    for compound in compounds:
+        compound_stints = stints_df[stints_df['Compound'].str.upper() == compound]
+        
+        all_normalized_times = {}
+        for _, stint in compound_stints.iterrows():
+            driver = stint['Driver']
+            lap_start = stint.get('LapStart', 1)
+            lap_end = stint.get('LapEnd', lap_start + 10)
+            
+            stint_laps = valid[(valid['Driver'].astype(str) == str(driver)) & 
+                               (valid['LapNumber'] >= lap_start) & 
+                               (valid['LapNumber'] <= lap_end)].sort_values('LapNumber')
+            
+            if len(stint_laps) < 5:
+                continue
+            
+            # Normalize lap times to stint start
+            base_time = stint_laps['LapTime_seconds'].iloc[0]
+            for i, (_, lap) in enumerate(stint_laps.iterrows()):
+                tyre_age = i + 1
+                if tyre_age not in all_normalized_times:
+                    all_normalized_times[tyre_age] = []
+                all_normalized_times[tyre_age].append(lap['LapTime_seconds'] - base_time)
+        
+        if all_normalized_times:
+            ages = sorted(all_normalized_times.keys())[:25]  # First 25 laps
+            avg_degradation = [np.mean(all_normalized_times[age]) for age in ages]
+            
+            color = COMPOUND_PLOT_COLORS.get(compound, '#888888')
+            ax.plot(ages, avg_degradation, marker='o', markersize=4, 
+                   linewidth=2, label=compound, color=color)
+    
+    ax.set_xlabel('Tire Age (laps)', fontsize=11)
+    ax.set_ylabel('Lap Time Increase from Start (seconds)', fontsize=11)
+    ax.set_title('Average Tire Degradation by Compound', fontsize=12, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=0, color='black', linewidth=0.5)
+    
+    # Right: Stint length vs average pace
+    ax = axes[1]
+    
+    stint_data = []
+    for _, stint in stints_df.iterrows():
+        driver = stint['Driver']
+        lap_start = stint.get('LapStart', 1)
+        lap_end = stint.get('LapEnd', lap_start + 10)
+        compound = stint.get('Compound', 'UNKNOWN')
+        
+        stint_laps = valid[(valid['Driver'].astype(str) == str(driver)) & 
+                           (valid['LapNumber'] >= lap_start) & 
+                           (valid['LapNumber'] <= lap_end)]
+        
+        if len(stint_laps) >= 3:
+            stint_data.append({
+                'Length': len(stint_laps),
+                'AvgPace': stint_laps['LapTime_seconds'].mean(),
+                'Compound': compound.upper() if compound else 'UNKNOWN'
+            })
+    
+    if stint_data:
+        stint_df = pd.DataFrame(stint_data)
+        
+        for compound in ['MEDIUM', 'HARD']:
+            compound_data = stint_df[stint_df['Compound'] == compound]
+            if not compound_data.empty:
+                color = COMPOUND_PLOT_COLORS.get(compound, '#888888')
+                ax.scatter(compound_data['Length'], compound_data['AvgPace'],
+                          s=100, c=color, alpha=0.6, label=compound, edgecolors='white')
+    
+    ax.set_xlabel('Stint Length (laps)', fontsize=11)
+    ax.set_ylabel('Average Lap Time (seconds)', fontsize=11)
+    ax.set_title('Stint Length vs Average Pace', fontsize=12, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('Tire Stint Analysis', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '17_stint_degradation.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+    return True
+
+
+def plot_18_sector_dominance(data_dir, plots_dir):
+    """Show which drivers dominated which sectors."""
+    laps_df = load_csv(data_dir, 'laps.csv')
+    drivers_df = load_csv(data_dir, 'drivers.csv')
+    
+    if laps_df is None or laps_df.empty:
+        print("  ⚠️  No lap data")
+        return False
+    
+    sector_cols = ['Sector1Time_seconds', 'Sector2Time_seconds', 'Sector3Time_seconds']
+    if not all(col in laps_df.columns for col in sector_cols):
+        print("  ⚠️  No sector time data")
+        return False
+    
+    # Get team colors
+    driver_teams = {}
+    if drivers_df is not None:
+        for _, row in drivers_df.iterrows():
+            driver_teams[str(row.get('DriverNumber', ''))] = row.get('TeamName', 'Unknown')
+            driver_teams[row.get('Abbreviation', '')] = row.get('TeamName', 'Unknown')
+    
+    # Filter valid data
+    valid = laps_df.copy()
+    for col in sector_cols:
+        valid = valid[valid[col] > 0]
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 8))
+    
+    sector_names = ['Sector 1', 'Sector 2', 'Sector 3']
+    
+    for i, (col, name) in enumerate(zip(sector_cols, sector_names)):
+        ax = axes[i]
+        
+        # Get best sector times per driver
+        best_sectors = valid.groupby('Driver')[col].min().nsmallest(10)
+        
+        colors = [get_team_color(driver_teams.get(d, 'Unknown')) for d in best_sectors.index]
+        
+        bars = ax.barh(range(len(best_sectors)), best_sectors.values, color=colors, alpha=0.8)
+        ax.set_yticks(range(len(best_sectors)))
+        ax.set_yticklabels(best_sectors.index)
+        ax.invert_yaxis()
+        ax.set_xlabel('Best Sector Time (seconds)', fontsize=10)
+        ax.set_title(name, fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Highlight fastest
+        fastest = best_sectors.idxmin()
+        ax.text(0.02, 0.98, f"🏆 {fastest}", transform=ax.transAxes, 
+                fontsize=11, va='top', fontweight='bold',
+                color=get_team_color(driver_teams.get(fastest, 'Unknown')))
+    
+    plt.suptitle('Sector Dominance - Best Times', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, '18_sector_dominance.png'), dpi=150, 
+                bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
     return True
 
@@ -711,6 +1606,14 @@ def main():
         ("Telemetry Comparison", plot_08_telemetry_comparison),
         ("Lap Time Evolution", plot_09_lap_time_evolution),
         ("Race Control Timeline", plot_10_race_control_timeline),
+        ("Race Events List", plot_11_race_events_list),
+        ("Position Changes", plot_12_position_changes),
+        ("Grid vs Finish", plot_13_grid_vs_finish),
+        ("Compound Performance", plot_14_compound_performance),
+        ("Driver Consistency", plot_15_driver_consistency),
+        ("Teammate Comparison", plot_16_teammate_comparison),
+        ("Stint Degradation", plot_17_stint_degradation),
+        ("Sector Dominance", plot_18_sector_dominance),
     ]
     
     results = {}
